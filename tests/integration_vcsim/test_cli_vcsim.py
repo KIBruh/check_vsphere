@@ -1,3 +1,6 @@
+import json
+import re
+
 import pytest
 
 
@@ -11,6 +14,51 @@ def _get_host_paths(run_govc):
     paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     assert paths, "no host paths returned by govc find -type h"
     return paths
+
+
+def _get_vm_paths(run_govc):
+    result = run_govc(["find", "-type", "m"])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    assert paths, "no vm paths returned by govc find -type m"
+    return paths
+
+
+def _get_datastore_names(run_govc):
+    result = run_govc(["find", "-type", "s"])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    names = [
+        line.strip().rsplit("/", 1)[-1]
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
+    assert names, "no datastore paths returned by govc find -type s"
+    return names
+
+
+def _get_vm_devices(run_govc, vm_path):
+    result = run_govc(["device.ls", "-json", "-vm", vm_path])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    payload = json.loads(result.stdout)
+    return payload.get("devices", [])
+
+
+def _disconnect_removable_devices(run_govc, vm_path):
+    devices = _get_vm_devices(run_govc, vm_path)
+
+    for device in devices:
+        if device.get("type") not in ("VirtualCdrom", "VirtualFloppy"):
+            continue
+
+        disconnect_result = run_govc(
+            ["device.disconnect", "-vm", vm_path, device["name"]]
+        )
+        assert disconnect_result.returncode == 0, (
+            disconnect_result.stdout + disconnect_result.stderr
+        )
 
 
 def test_about_command_works_with_vcsim(run_cli, cli_connection_args):
@@ -142,3 +190,87 @@ def test_host_runtime_con_changes_state_when_disconnected(
     assert result.returncode == 1, result.stdout + result.stderr
     assert "WARNING:" in result.stdout
     assert "connection state is 'disconnected'" in result.stdout
+
+
+def test_media_changes_state_with_cdrom_insert(
+    run_cli, run_govc, cli_connection_args, tmp_path
+):
+    vm_path = _get_vm_paths(run_govc)[0]
+    vm_name = vm_path.rsplit("/", 1)[-1]
+    allowed_regex = "^{}$".format(re.escape(vm_name))
+
+    _disconnect_removable_devices(run_govc, vm_path)
+
+    baseline_result = run_cli(["media", "--allowed", allowed_regex] + cli_connection_args)
+    assert baseline_result.returncode == 0, baseline_result.stdout + baseline_result.stderr
+    assert "OK:" in baseline_result.stdout
+
+    before_cdroms = {
+        d["name"]
+        for d in _get_vm_devices(run_govc, vm_path)
+        if d.get("type") == "VirtualCdrom"
+    }
+
+    add_result = run_govc(["device.cdrom.add", "-vm", vm_path])
+    assert add_result.returncode == 0, add_result.stdout + add_result.stderr
+
+    after_cdroms = {
+        d["name"]
+        for d in _get_vm_devices(run_govc, vm_path)
+        if d.get("type") == "VirtualCdrom"
+    }
+
+    new_cdroms = sorted(after_cdroms - before_cdroms)
+    cdrom_name = new_cdroms[0] if new_cdroms else add_result.stdout.strip()
+    assert cdrom_name, "unable to determine added cdrom device"
+
+    eject_result = run_govc(["device.cdrom.eject", "-vm", vm_path, "-device", cdrom_name])
+    assert eject_result.returncode == 0, eject_result.stdout + eject_result.stderr
+
+    datastore_name = _get_datastore_names(run_govc)[0]
+    iso_path = tmp_path / "pytest-media.iso"
+    iso_path.write_bytes(b"pytest-media")
+
+    upload_result = run_govc(
+        [
+            "datastore.upload",
+            "-ds",
+            datastore_name,
+            str(iso_path),
+            "pytest-media.iso",
+        ]
+    )
+    assert upload_result.returncode == 0, upload_result.stdout + upload_result.stderr
+
+    insert_result = run_govc(
+        [
+            "device.cdrom.insert",
+            "-vm",
+            vm_path,
+            "-device",
+            cdrom_name,
+            "-ds",
+            datastore_name,
+            "pytest-media.iso",
+        ]
+    )
+    assert insert_result.returncode == 0, insert_result.stdout + insert_result.stderr
+
+    faulty_result = run_cli(["media", "--allowed", allowed_regex] + cli_connection_args)
+    assert faulty_result.returncode == 2, faulty_result.stdout + faulty_result.stderr
+    assert "CRITICAL:" in faulty_result.stdout
+    assert vm_name in faulty_result.stdout
+
+    cleanup_eject = run_govc(["device.cdrom.eject", "-vm", vm_path, "-device", cdrom_name])
+    assert cleanup_eject.returncode == 0, cleanup_eject.stdout + cleanup_eject.stderr
+
+    cleanup_disconnect = run_govc(
+        ["device.disconnect", "-vm", vm_path, cdrom_name]
+    )
+    assert cleanup_disconnect.returncode == 0, (
+        cleanup_disconnect.stdout + cleanup_disconnect.stderr
+    )
+
+    restored_result = run_cli(["media", "--allowed", allowed_regex] + cli_connection_args)
+    assert restored_result.returncode == 0, restored_result.stdout + restored_result.stderr
+    assert "OK:" in restored_result.stdout
