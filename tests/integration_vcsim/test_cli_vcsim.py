@@ -78,12 +78,47 @@ def test_datastores_command_works_with_vcsim(run_cli, cli_connection_args):
     assert "|" in result.stdout
 
 
+def test_datastores_warns_when_filter_matches_nothing(run_cli, cli_connection_args):
+    result = run_cli([
+        "datastores",
+        "--allowed",
+        "^definitely-not-a-datastore$",
+    ] + cli_connection_args)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "WARNING:" in result.stdout
+    assert "no datastores found" in result.stdout
+
+
 def test_power_state_command_works_with_vcsim(run_cli, cli_connection_args):
     result = run_cli(["power-state"] + cli_connection_args)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OK:" in result.stdout
     assert "hosts" in result.stdout
+
+
+def test_list_metrics_outputs_metric_identifiers(run_cli, cli_connection_args):
+    result = run_cli(["list-metrics"] + cli_connection_args)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(r"\b\d+\s+\w+:\w+:\w+", result.stdout)
+
+
+def test_vm_tools_default_is_ok_on_vcsim(run_cli, cli_connection_args):
+    result = run_cli(["vm-tools"] + cli_connection_args)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK:" in result.stdout
+    assert "VMs checked for VMware Tools state" in result.stdout
+
+
+def test_vm_tools_not_installed_flag_can_escalate(run_cli, cli_connection_args):
+    result = run_cli(["vm-tools", "--not-installed"] + cli_connection_args)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "CRITICAL:" in result.stdout
+    assert "tools not installed" in result.stdout
 
 
 def test_snapshots_threshold_with_created_snapshot(
@@ -107,6 +142,68 @@ def test_snapshots_threshold_with_created_snapshot(
     assert result.returncode == 1, result.stdout + result.stderr
     assert "WARNING:" in result.stdout
     assert "snapshots" in result.stdout
+
+
+def test_snapshots_age_threshold_with_created_snapshot(
+    run_cli, run_govc, cli_connection_args
+):
+    vm_path = _get_vm_paths(run_govc)[0]
+    vm_name = vm_path.rsplit("/", 1)[-1]
+    snapshot_name = "pytest-snap-age"
+
+    create_result = run_govc(["snapshot.create", "-vm", vm_path, snapshot_name])
+    assert create_result.returncode == 0, create_result.stdout + create_result.stderr
+
+    result = run_cli(
+        [
+            "snapshots",
+            "--mode",
+            "age",
+            "--warning",
+            "0",
+            "--allowed",
+            "^{};".format(re.escape(vm_name)),
+        ]
+        + cli_connection_args
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "WARNING:" in result.stdout
+    assert "too old snapshots found" in result.stdout
+    assert vm_name in result.stdout
+
+
+def test_perf_host_maintenance_state_can_be_configured(
+    run_cli, run_govc, cli_connection_args
+):
+    host_path = _get_host_paths(run_govc)[0]
+    host_name = host_path.rsplit("/", 1)[-1]
+    perf_args = [
+        "perf",
+        "--vimtype",
+        "HostSystem",
+        "--vimname",
+        host_name,
+        "--perfcounter",
+        "cpu:usage:average",
+        "--maintenance-state",
+        "WARNING",
+    ]
+
+    baseline_result = run_cli(perf_args + cli_connection_args)
+    assert baseline_result.returncode == 0, baseline_result.stdout + baseline_result.stderr
+    assert "OK:" in baseline_result.stdout
+    assert "Counter cpu:usage:average" in baseline_result.stdout
+
+    maintenance_result = run_govc(["host.maintenance.enter", host_path])
+    assert maintenance_result.returncode == 0, (
+        maintenance_result.stdout + maintenance_result.stderr
+    )
+
+    degraded_result = run_cli(perf_args + cli_connection_args)
+    assert degraded_result.returncode == 1, degraded_result.stdout + degraded_result.stderr
+    assert "WARNING:" in degraded_result.stdout
+    assert "is in maintenance" in degraded_result.stdout
 
 
 def test_host_runtime_maintenance_changes_state(run_cli, run_govc, cli_connection_args):
