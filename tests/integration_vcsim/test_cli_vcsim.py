@@ -121,6 +121,25 @@ def test_vm_tools_not_installed_flag_can_escalate(run_cli, cli_connection_args):
     assert "tools not installed" in result.stdout
 
 
+def test_vm_guestfs_unknown_vm_returns_unknown(run_cli, cli_connection_args):
+    result = run_cli(
+        ["vm-guestfs", "--vm-name", "definitely-missing-vm"] + cli_connection_args
+    )
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "UNKNOWN:" in result.stdout
+    assert "not found" in result.stdout
+
+
+def test_vm_guestfs_existing_vm_returns_ok(run_cli, run_govc, cli_connection_args):
+    vm_path = _get_vm_paths(run_govc)[0]
+    vm_name = vm_path.rsplit("/", 1)[-1]
+    result = run_cli(["vm-guestfs", "--vm-name", vm_name] + cli_connection_args)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK:" in result.stdout
+
+
 def test_snapshots_threshold_with_created_snapshot(
     run_cli, run_govc, cli_connection_args
 ):
