@@ -1,3 +1,14 @@
+# v0.3.30
+
+* add vihost filter option to snapshot command
+* fix: vSAN command now respects SSL verification settings
+* fix: cluster-health command honors standby filtering only on request
+* fix: reduce repeated vSphere property fetches (performance improvement)
+* fix: harden vm-guestfs command and add test coverage
+* refactor: move argument definition into get_argparser
+* ci: add GitHub Actions test workflow
+* test: extend vcsim and unit test coverage with mocked pyVmomi
+
 # v0.3.21
 
 * introduce `cluster-health` mode
