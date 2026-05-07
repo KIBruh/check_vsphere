@@ -40,6 +40,7 @@ args = None
 
 def get_argparser():
     parser = cli.Parser()
+    parser.add_optional_arguments(cli.Argument.VIHOST)
     parser.add_optional_arguments( CheckArgument.CRITICAL_THRESHOLD )
     parser.add_optional_arguments( CheckArgument.WARNING_THRESHOLD )
     parser.add_required_arguments( {
@@ -108,7 +109,6 @@ def run():
     global check
     global args
     parser = get_argparser()
-    parser.add_optional_arguments(cli.Argument.VIHOST)
 
     args = parser.get_args()
 
