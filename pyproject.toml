@@ -32,3 +32,11 @@ check_vsphere = "checkvsphere.cli:main"
 
 [tool.flit.sdist]
 exclude = ["docs/", "stuff/", "dist/", ".ruff_cache", "inkubator"]
+
+[tool.coverage.run]
+source = ["checkvsphere"]
+patch = ["subprocess"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true

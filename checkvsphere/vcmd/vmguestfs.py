@@ -72,8 +72,15 @@ def run():
     except IndexError:
         check.exit(Status.UNKNOWN, f"vm {args.vm_name} not found")
 
+    guest = vm["props"].get("guest")
+    if guest is None or not hasattr(guest, "disk") or guest.disk is None:
+        check.exit(
+            Status.UNKNOWN,
+            f"guest filesystem data for {args.vm_name} is unavailable",
+        )
+
     # print(vm['props']['guest'])
-    fs_info(check, vm["props"]["guest"].disk)
+    fs_info(check, guest.disk)
 
 
 def fs_info(check: Check, disks):
