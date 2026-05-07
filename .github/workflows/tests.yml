@@ -34,5 +34,5 @@ jobs:
 
       - name: Run test suite
         run: |
-          pytest -q
-          pytest -q --run-integration tests/integration_vcsim
+          pytest
+          pytest --run-integration tests/integration_vcsim
