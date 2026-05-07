@@ -121,6 +121,18 @@ def test_vm_tools_not_installed_flag_can_escalate(run_cli, cli_connection_args):
     assert "tools not installed" in result.stdout
 
 
+def test_vm_tools_vihost_filter_works_with_vcsim(
+    run_cli, run_govc, cli_connection_args
+):
+    host_name = _get_host_paths(run_govc)[0].rsplit("/", 1)[-1]
+
+    result = run_cli(["vm-tools", "--vihost", host_name] + cli_connection_args)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK:" in result.stdout
+    assert "VMs checked for VMware Tools state" in result.stdout
+
+
 def test_vm_guestfs_unknown_vm_returns_unknown(run_cli, cli_connection_args):
     result = run_cli(
         ["vm-guestfs", "--vm-name", "definitely-missing-vm"] + cli_connection_args
@@ -190,6 +202,35 @@ def test_snapshots_age_threshold_with_created_snapshot(
     assert "WARNING:" in result.stdout
     assert "too old snapshots found" in result.stdout
     assert vm_name in result.stdout
+
+
+def test_snapshots_vihost_filter_works_with_created_snapshot(
+    run_cli, run_govc, cli_connection_args
+):
+    vm_path = _get_vm_paths(run_govc)[0]
+    vm_name = vm_path.rsplit("/", 1)[-1]
+    host_name = re.sub(r"_VM\d+$", "", vm_name)
+    snapshot_name = "pytest-snap-host"
+
+    create_result = run_govc(["snapshot.create", "-vm", vm_path, snapshot_name])
+    assert create_result.returncode == 0, create_result.stdout + create_result.stderr
+
+    result = run_cli(
+        [
+            "snapshots",
+            "--mode",
+            "count",
+            "--warning",
+            "0",
+            "--vihost",
+            host_name,
+        ]
+        + cli_connection_args
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "WARNING:" in result.stdout
+    assert "snapshots" in result.stdout
 
 
 def test_perf_host_maintenance_state_can_be_configured(
@@ -390,3 +431,20 @@ def test_media_changes_state_with_cdrom_insert(
     restored_result = run_cli(["media", "--allowed", allowed_regex] + cli_connection_args)
     assert restored_result.returncode == 0, restored_result.stdout + restored_result.stderr
     assert "OK:" in restored_result.stdout
+
+
+def test_media_vihost_filter_works_with_vcsim(run_cli, run_govc, cli_connection_args):
+    vm_path = _get_vm_paths(run_govc)[0]
+    vm_name = vm_path.rsplit("/", 1)[-1]
+    host_name = re.sub(r"_VM\d+$", "", vm_name)
+    allowed_regex = "^{}$".format(re.escape(vm_name))
+
+    _disconnect_removable_devices(run_govc, vm_path)
+
+    result = run_cli(
+        ["media", "--vihost", host_name, "--allowed", allowed_regex]
+        + cli_connection_args
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK:" in result.stdout

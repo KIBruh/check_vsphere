@@ -134,7 +134,7 @@ def check_healthtest(check, clusters):
                     continue
                 check.add_message(
                     health2state(test.testHealth),
-                    f"Cluster: {cluster['moref'].name} Group: { group.groupName } Status: { test.testHealth } Test: { test.testName }"
+                    f"Cluster: {cluster['name']} Group: { group.groupName } Status: { test.testHealth } Test: { test.testName }"
                 )
 
     opts = {}

@@ -25,6 +25,7 @@ __cmd__ = 'snapshots'
 import logging
 from pyVmomi import vim
 from monplugin import Check, Status
+from .. import CheckVsphereException
 from ..tools import cli, service_instance
 from datetime import datetime, timedelta, timezone
 from ..tools.helper import (
@@ -107,6 +108,8 @@ def run():
     global check
     global args
     parser = get_argparser()
+    parser.add_optional_arguments(cli.Argument.VIHOST)
+
     args = parser.get_args()
 
     if not (args.warning or args.critical):
@@ -117,10 +120,23 @@ def run():
 
     args._si = service_instance.connect(args)
 
+    if args.vihost:
+        host = find_entity_views(
+            args._si,
+            vim.HostSystem,
+            begin_entity=args._si.content.rootFolder,
+            sieve={'name': args.vihost},
+        )
+        if not host:
+            raise CheckVsphereException(f"host {args.vihost} not found")
+        parentView = host[0]['obj'].obj
+    else:
+        parentView = args._si.content.rootFolder
+
     vms = find_entity_views(
         args._si,
         vim.VirtualMachine,
-        begin_entity=args._si.content.rootFolder,
+        begin_entity=parentView,
         properties=['name', 'snapshot', 'resourcePool', 'config.template']
     )
 
