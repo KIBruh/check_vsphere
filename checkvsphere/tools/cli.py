@@ -272,7 +272,7 @@ class Argument:
     VIHOST = {
         'name_or_flags': ['--vihost'],
         'options': {'action': 'store',
-                    'help': 'Name/ip address of ESXi host as seen in vCenter Server'}
+                    'help': 'Name of ESXi host as seen in vCenter Server'}
     }
     DVS_PORT_GROUP_NAME = {
         'name_or_flags': ['--dvs-pg-name'],
