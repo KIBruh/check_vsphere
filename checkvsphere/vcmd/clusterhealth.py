@@ -62,6 +62,7 @@ def host_in_standby(h):
     r = h['runtime'].standbyMode == "none"
     if not r:
         logging.debug(f"{h['name']} in standby, not considered part of cluster")
+    return not r
 
 def run():
     global args
@@ -114,8 +115,9 @@ def run():
         check.exit(Status.CRITICAL, "Cluster is empty")
 
     hosts = resolve_hosts(si, hosts)
-    # Hosts in standby are not considered part of the cluster
-    hosts = list(filter(lambda h: not host_in_standby(h), hosts))
+    if args.nostandby:
+        # Hosts in standby are not considered part of the cluster
+        hosts = list(filter(lambda h: not host_in_standby(h), hosts))
 
     cluster_size = len(hosts)
     failed_members = sum(1 for h in hosts if host_is_failed(args, h))
