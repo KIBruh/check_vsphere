@@ -180,8 +180,9 @@ def check_objecthealth(check, clusters):
 
 def sslContext(args):
     context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
+    if args.disable_ssl_verification:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
 
     return context
 
