@@ -25,6 +25,7 @@ __cmd__ = 'snapshots'
 import logging
 from pyVmomi import vim
 from monplugin import Check, Status
+from .. import CheckVsphereException
 from ..tools import cli, service_instance
 from datetime import datetime, timedelta, timezone
 from ..tools.helper import (
@@ -120,12 +121,15 @@ def run():
     args._si = service_instance.connect(args)
 
     if args.vihost:
-        host_view = args._si.content.viewManager.CreateContainerView(
-            args._si.content.rootFolder, [vim.HostSystem], True)
-        try:
-            parentView = next(x for x in host_view.view if x.name.lower() == args.vihost.lower())
-        except:
+        host = find_entity_views(
+            args._si,
+            vim.HostSystem,
+            begin_entity=args._si.content.rootFolder,
+            sieve={'name': args.vihost},
+        )
+        if not host:
             raise CheckVsphereException(f"host {args.vihost} not found")
+        parentView = host[0]['obj'].obj
     else:
         parentView = args._si.content.rootFolder
 

@@ -42,12 +42,15 @@ def run():
     check = Check()
 
     if args.vihost:
-        host_view = si.content.viewManager.CreateContainerView(
-            si.content.rootFolder, [vim.HostSystem], True)
-        try:
-            parentView = next(x for x in host_view.view if x.name.lower() == args.vihost.lower())
-        except:
+        host = find_entity_views(
+            si,
+            vim.HostSystem,
+            begin_entity=si.content.rootFolder,
+            sieve={'name': args.vihost},
+        )
+        if not host:
             raise CheckVsphereException(f"host {args.vihost} not found")
+        parentView = host[0]['obj'].obj
     else:
         parentView = si.content.rootFolder
 
