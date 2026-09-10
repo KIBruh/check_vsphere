@@ -99,7 +99,7 @@ def successful_responses(protected_objects, category_name=zertotag.ZERTOTAG_CATE
 
 
 def test_zertotag_uses_exact_category_and_bulk_associations(monkeypatch, capsys):
-    args = make_args()
+    args = make_args(banned=['^ignored$'])
     session = FakeSession(successful_responses([
         {'type': 'VirtualMachine', 'id': 'vm-protected'},
         {'type': 'HostSystem', 'id': 'host-1'},
@@ -112,6 +112,7 @@ def test_zertotag_uses_exact_category_and_bulk_associations(monkeypatch, capsys)
             vm('vm-missing', 'missing'),
             vm('vm-off', 'powered-off', power_state='poweredOff'),
             vm('vm-template', 'template', template=True),
+            vm('vm-ignored', 'ignored'),
         ],
         session,
     )
@@ -124,9 +125,13 @@ def test_zertotag_uses_exact_category_and_bulk_associations(monkeypatch, capsys)
     assert 'missing is missing Zerto tag' in output
     assert "'vms'=2.0" in output
     assert "'tagged_vms'=1.0" in output
+    assert "'missing_vms'=1.0" in output
+    assert "'offline_vms'=1.0" in output
+    assert "'ignored_vms'=1.0" in output
+    assert "'template_vms'=1.0" in output
+    assert "'discovered_vms'=5.0" in output
     assert "'rest_api_calls'=6.0" in output
     assert 'powered-off' not in output
-    assert 'template' not in output
     assert session.verify is True
     assert all(':8443/' in call[1] for call in session.calls)
     assert session.calls[-1][2]['json'] == {'tag_ids': ['tag-1', 'tag-2']}

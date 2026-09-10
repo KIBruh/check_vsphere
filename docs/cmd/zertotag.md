@@ -17,8 +17,18 @@ as UNKNOWN.
 The vCenter account needs permission to list tagging categories, tags, and tag
 associations.
 
-The command exports `vms` (eligible VMs), `tagged_vms` (eligible VMs with a
-matching tag), and `rest_api_calls` performance data.
+The command exports the following performance data:
+
+| label | description |
+|---|---|
+| `discovered_vms` | VMs discovered in the selected vCenter or `--vihost` scope. |
+| `vms` | Eligible VMs evaluated for tag compliance. |
+| `tagged_vms` | Eligible VMs with a matching tag. |
+| `missing_vms` | Eligible VMs without a matching tag. |
+| `offline_vms` | Powered-off non-template VMs excluded by default. |
+| `ignored_vms` | VMs excluded by `--include` or `--exclude`. |
+| `template_vms` | Templates excluded from the check. |
+| `rest_api_calls` | vCenter REST requests, including authentication. |
 
 ## Options
 

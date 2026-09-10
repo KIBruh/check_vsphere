@@ -237,19 +237,26 @@ def run():
     logging.debug('Zerto tag check: discovered %d virtual machines', len(vms))
 
     candidates = {}
+    ignored_vms = 0
+    offline_vms = 0
+    template_vms = 0
     for vm in vms:
         name = vm['props']['name']
         if isbanned(args, name):
+            ignored_vms += 1
             logging.debug('Zerto tag check: excluding VM %s because it matches --exclude', name)
             continue
         if not isallowed(args, name):
+            ignored_vms += 1
             logging.debug('Zerto tag check: excluding VM %s because it does not match --include', name)
             continue
-        if not args.include_powered_off and vm['props'].get('runtime.powerState') != 'poweredOn':
-            logging.debug('Zerto tag check: excluding powered-off VM %s', name)
-            continue
         if vm['props'].get('config.template'):
+            template_vms += 1
             logging.debug('Zerto tag check: excluding template %s', name)
+            continue
+        if not args.include_powered_off and vm['props'].get('runtime.powerState') != 'poweredOn':
+            offline_vms += 1
+            logging.debug('Zerto tag check: excluding powered-off VM %s', name)
             continue
 
         vm_id = vm['obj'].obj._moId
@@ -281,6 +288,11 @@ def run():
 
     check.add_perfdata(label='vms', value=len(candidate_vm_ids))
     check.add_perfdata(label='tagged_vms', value=len(tagged_vm_ids))
+    check.add_perfdata(label='missing_vms', value=len(missing_vm_ids))
+    check.add_perfdata(label='offline_vms', value=offline_vms)
+    check.add_perfdata(label='ignored_vms', value=ignored_vms)
+    check.add_perfdata(label='template_vms', value=template_vms)
+    check.add_perfdata(label='discovered_vms', value=len(vms))
     check.add_perfdata(label='rest_api_calls', value=rest_api_calls)
 
     (code, message) = check.check_messages(separator='\n', separator_all='\n')
