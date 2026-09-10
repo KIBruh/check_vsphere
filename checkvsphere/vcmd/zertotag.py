@@ -15,7 +15,7 @@
 
 
 """
-checks if there are any vms on a host that don't have Zerto DRaaS tag
+Checks whether eligible VMs have a Zerto DRaaS protection tag.
 
 The missing Zerto tag is a critical issue because it highlights that a
 new system lacks DRaaS replication protection. To ensure compliance,
@@ -25,22 +25,141 @@ every virtual machine must be assigned a Zerto tag identified by the
 
 __cmd__ = 'zertotag'
 
+import os
+
 import requests
 import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-from pyVmomi import vim
 from monplugin import Check, Status
+from pyVmomi import vim
+
 from .. import CheckVsphereException
 from ..tools import cli, service_instance
-from ..tools.helper import find_entity_views, isbanned, isallowed, CheckArgument
+from ..tools.helper import CheckArgument, find_entity_views, isallowed, isbanned
+
+
+ZERTOTAG_CATEGORY = 'Zerto - Protection Automation'
+
+
+class TaggingApiError(Exception):
+    """Raised when the vCenter tagging API cannot be used safely."""
+
+
+def get_session_verify(args):
+    if args.disable_ssl_verification:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return False
+
+    return os.environ.get('SSL_CA_FILE') or os.environ.get('SSL_CA_PATH') or True
+
+
+def get_response_value(response, operation):
+    if response.status_code != 200:
+        raise TaggingApiError('{} failed (HTTP {})'.format(operation, response.status_code))
+
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise TaggingApiError('{} returned invalid JSON'.format(operation)) from error
+
+    if not isinstance(payload, dict) or 'value' not in payload:
+        raise TaggingApiError('{} returned an invalid response'.format(operation))
+
+    return payload['value']
+
+
+def get_protected_vm_ids(args):
+    """Return VM managed-object IDs assigned a tag in the Zerto category."""
+    base_url = 'https://{}:{}'.format(args.host, args.port)
+    session = requests.Session()
+    session.verify = get_session_verify(args)
+
+    try:
+        response = session.post(
+            '{}/rest/com/vmware/cis/session'.format(base_url),
+            auth=(args.user, args.password),
+        )
+        session_token = get_response_value(response, 'REST authentication')
+        if not isinstance(session_token, str) or not session_token:
+            raise TaggingApiError('REST authentication returned an invalid session token')
+        session.headers.update({'vmware-api-session-id': session_token})
+
+        category_ids = get_response_value(
+            session.get('{}/rest/com/vmware/cis/tagging/category'.format(base_url)),
+            'Category listing',
+        )
+        if not isinstance(category_ids, list):
+            raise TaggingApiError('Category listing returned an invalid response')
+
+        category_id = None
+        for current_category_id in category_ids:
+            category = get_response_value(
+                session.get(
+                    '{}/rest/com/vmware/cis/tagging/category/id:{}'.format(
+                        base_url,
+                        current_category_id,
+                    )
+                ),
+                'Category lookup',
+            )
+            if not isinstance(category, dict):
+                raise TaggingApiError('Category lookup returned an invalid response')
+            if category.get('name') == ZERTOTAG_CATEGORY:
+                category_id = current_category_id
+                break
+
+        if category_id is None:
+            return None
+
+        tags_url = '{}/rest/com/vmware/cis/tagging/tag?~action=list-tags-for-category'.format(
+            base_url
+        )
+        tag_ids = get_response_value(
+            session.post(tags_url, json={'category_id': category_id}),
+            'Tag listing',
+        )
+        if not isinstance(tag_ids, list):
+            raise TaggingApiError('Tag listing returned an invalid response')
+        if not tag_ids:
+            return set()
+
+        associations = get_response_value(
+            session.post(
+                '{}/rest/com/vmware/cis/tagging/tag-association?~action='
+                'list-attached-objects-on-tags'.format(base_url),
+                json={'tag_ids': tag_ids},
+            ),
+            'Tag association lookup',
+        )
+    except requests.RequestException as error:
+        raise TaggingApiError('REST request failed: {}'.format(error)) from error
+
+    if not isinstance(associations, list):
+        raise TaggingApiError('Tag association lookup returned an invalid response')
+
+    protected_vm_ids = set()
+    for association in associations:
+        if not isinstance(association, dict) or not isinstance(association.get('object_ids'), list):
+            raise TaggingApiError('Tag association lookup returned an invalid response')
+        for object_id in association['object_ids']:
+            if not isinstance(object_id, dict):
+                raise TaggingApiError('Tag association lookup returned an invalid response')
+            if object_id.get('type') == 'VirtualMachine' and isinstance(object_id.get('id'), str):
+                protected_vm_ids.add(object_id['id'])
+
+    return protected_vm_ids
+
 
 def run():
     parser = cli.Parser()
-    # parser.add_optional_arguments(cli.Argument.DATACENTER_NAME)
     parser.add_optional_arguments(cli.Argument.VIHOST)
     parser.add_optional_arguments(CheckArgument.ALLOWED('regex match against vm name'))
     parser.add_optional_arguments(CheckArgument.BANNED('regex match against vm name'))
+    parser.add_custom_argument(
+        '--include-powered-off',
+        action='store_true',
+        help='include powered-off VMs in the tag compliance check',
+    )
     args = parser.get_args()
     si = service_instance.connect(args)
 
@@ -64,123 +183,33 @@ def run():
         si,
         vim.VirtualMachine,
         begin_entity=parentView,
-        properties=['name', 'config.hardware.device', 'config.template', 'customValue']
+        properties=['name', 'config.template'],
     )
 
-    check.add_message(
-        Status.OK,
-        "no VMs missing Zerto tags"
-    )
-
-    # 1. API REST authentication
-    vcenter_host = args.host
-    vcenter_user = args.user
-    vcenter_password = args.password
-
-    session = requests.Session()
-    session.verify = False # Ignore SSL cert
-
-    # Request token REST
-    auth_url = f"https://{vcenter_host}/rest/com/vmware/cis/session"
-    auth_resp = session.post(auth_url, auth=(vcenter_user, vcenter_password))
-
-    if auth_resp.status_code != 200:
-        check.add_message(Status.UNKNOWN, f"Unable to authenticate with the REST API: {auth_resp.text}")
-        (code, message) = check.check_messages()
-        check.exit(code=code, message=message)
-
-    # Save token for next requests
-    session_token = auth_resp.json()['value']
-    session.headers.update({'vmware-api-session-id': session_token})
-
-    # Helper function to get tag categories and names given a VM ID
-    def get_vm_tags(vm_id):
-        # 1. Find the tag IDs associated with the VM
-        assoc_url = f"https://{vcenter_host}/rest/com/vmware/cis/tagging/tag-association?~action=list-attached-tags"
-        payload = {
-            "object_id": {
-                "id": vm_id,
-                "type": "VirtualMachine"
-            }
-        }
-        resp = session.post(assoc_url, json=payload)
-
-        if resp.status_code != 200:
-            return f"Error {resp.status_code}: {resp.text}"
-
-        tag_ids = resp.json().get('value', [])
-        if not tag_ids:
-            return "No Tags"
-
-        # 2. Resolve tag IDs to retrieve Tag Name and Category ID
-        tag_details = []
-        for tag_id in tag_ids:
-            tag_url = f"https://{vcenter_host}/rest/com/vmware/cis/tagging/tag/id:{tag_id}"
-            tag_resp = session.get(tag_url)
-
-            if tag_resp.status_code == 200:
-                tag_data = tag_resp.json().get('value', {})
-                tag_name = tag_data.get('name', 'Unknown')
-                category_id = tag_data.get('category_id')
-
-                # 3. Resolve Category ID to retrieve Category Name
-                category_name = "UnknownCategory"
-                if category_id:
-                    cat_url = f"https://{vcenter_host}/rest/com/vmware/cis/tagging/category/id:{category_id}"
-                    cat_resp = session.get(cat_url)
-                    if cat_resp.status_code == 200:
-                        category_name = cat_resp.json().get('value', {}).get('name', 'Unknown')
-
-                # Combine category and tag in the desired format
-                tag_details.append(f"[{category_name}] {tag_name}")
-            else:
-                tag_details.append(f"TagID:{tag_id}")
-
-        return ", ".join(tag_details)
-
+    candidates = {}
     for vm in vms:
-        match = 0
-
         if isbanned(args, vm['props']['name']):
             continue
         if not isallowed(args, vm['props']['name']):
             continue
-
-        if vm['props']['runtime.powerState'] != 'poweredOn':
-            # it's powered off, api is unreliable
-            # config.hardware or config.template might be missing
+        if not args.include_powered_off and vm['props'].get('runtime.powerState') != 'poweredOn':
+            continue
+        if vm['props'].get('config.template'):
             continue
 
-        if vm['props']['config.template']:
-            # This vm is a template, ignore it
-            continue
+        candidates[vm['obj'].obj._moId] = vm['props']['name']
 
-        # Check if the VM has a tag where the category contains "Zerto"
-        has_zerto_category = False
+    try:
+        protected_vm_ids = get_protected_vm_ids(args)
+    except TaggingApiError as error:
+        check.exit(Status.UNKNOWN, 'Unable to query vCenter tagging API: {}'.format(error))
 
-        vm_id = vm['obj'].obj._moId
-        tags_str = get_vm_tags(vm_id)
-        for item in tags_str.split(', '):
-            if '[' in item and ']' in item:
-                # Extract the text between '[' and ']'
-                category_name = item[item.find('[')+1 : item.find(']')]
+    if protected_vm_ids is None:
+        check.exit(Status.CRITICAL, '{} category not found'.format(ZERTOTAG_CATEGORY))
 
-                # Check if "Zerto" is part of the category name
-                if 'Zerto' in category_name:
-                    has_zerto_category = True
-                    break
-
-        # Skip this VM if it has Zerto-related tag
-        if has_zerto_category:
-            continue
-
-        #print(f"VM: {vm['props']['name']} | Tag: {tags_str}")
-        match += 1
-        if match > 0:
-            check.add_message(
-                Status.CRITICAL,
-                f'{vm["props"]["name"]} is missing Zerto tag'
-            )
+    check.add_message(Status.OK, 'no VMs missing Zerto tags')
+    for vm_id in sorted(set(candidates) - protected_vm_ids, key=lambda item: candidates[item]):
+        check.add_message(Status.CRITICAL, '{} is missing Zerto tag'.format(candidates[vm_id]))
 
     (code, message) = check.check_messages(separator=' - ')
     check.exit(
