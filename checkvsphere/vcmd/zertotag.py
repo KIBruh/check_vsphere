@@ -25,7 +25,9 @@ every virtual machine must be assigned a Zerto tag identified by the
 
 __cmd__ = 'zertotag'
 
+import logging
 import os
+import re
 
 import requests
 import urllib3
@@ -33,12 +35,13 @@ import urllib3
 from monplugin import Check, Status
 from pyVmomi import vim
 
-from .. import CheckVsphereException
-from ..tools import cli, service_instance
-from ..tools.helper import CheckArgument, find_entity_views, isallowed, isbanned
+from checkvsphere import CheckVsphereException
+from checkvsphere.tools import cli, service_instance
+from checkvsphere.tools.helper import CheckArgument, find_entity_views, isallowed, isbanned
 
 
 ZERTOTAG_CATEGORY = 'Zerto - Protection Automation'
+ZERTOTAG_CATEGORY_PATTERN = re.compile(r'Zerto [-\u2013] Protection Automation')
 
 
 class TaggingApiError(Exception):
@@ -47,10 +50,17 @@ class TaggingApiError(Exception):
 
 def get_session_verify(args):
     if args.disable_ssl_verification:
+        logging.debug('Zerto tag check: REST SSL verification disabled')
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         return False
 
-    return os.environ.get('SSL_CA_FILE') or os.environ.get('SSL_CA_PATH') or True
+    ca_bundle = os.environ.get('SSL_CA_FILE') or os.environ.get('SSL_CA_PATH')
+    if ca_bundle:
+        logging.debug('Zerto tag check: REST SSL verification uses configured CA bundle')
+        return ca_bundle
+
+    logging.debug('Zerto tag check: REST SSL verification uses system trust store')
+    return True
 
 
 def get_response_value(response, operation):
@@ -73,9 +83,17 @@ def get_protected_vm_ids(args):
     base_url = 'https://{}:{}'.format(args.host, args.port)
     session = requests.Session()
     session.verify = get_session_verify(args)
+    rest_api_calls = 0
+
+    def request(method, url, **kwargs):
+        nonlocal rest_api_calls
+        rest_api_calls += 1
+        return getattr(session, method)(url, **kwargs)
 
     try:
-        response = session.post(
+        logging.debug('Zerto tag check: authenticating to vCenter REST API at %s', base_url)
+        response = request(
+            'post',
             '{}/rest/com/vmware/cis/session'.format(base_url),
             auth=(args.user, args.password),
         )
@@ -83,18 +101,21 @@ def get_protected_vm_ids(args):
         if not isinstance(session_token, str) or not session_token:
             raise TaggingApiError('REST authentication returned an invalid session token')
         session.headers.update({'vmware-api-session-id': session_token})
+        logging.debug('Zerto tag check: vCenter REST authentication succeeded')
 
         category_ids = get_response_value(
-            session.get('{}/rest/com/vmware/cis/tagging/category'.format(base_url)),
+            request('get', '{}/rest/com/vmware/cis/tagging/category'.format(base_url)),
             'Category listing',
         )
         if not isinstance(category_ids, list):
             raise TaggingApiError('Category listing returned an invalid response')
+        logging.debug('Zerto tag check: found %d tag categories', len(category_ids))
 
         category_id = None
         for current_category_id in category_ids:
             category = get_response_value(
-                session.get(
+                request(
+                    'get',
                     '{}/rest/com/vmware/cis/tagging/category/id:{}'.format(
                         base_url,
                         current_category_id,
@@ -104,27 +125,43 @@ def get_protected_vm_ids(args):
             )
             if not isinstance(category, dict):
                 raise TaggingApiError('Category lookup returned an invalid response')
-            if category.get('name') == ZERTOTAG_CATEGORY:
+            category_name = category.get('name')
+            if not isinstance(category_name, str):
+                raise TaggingApiError('Category lookup returned an invalid response')
+            logging.debug(
+                'Zerto tag check: category id=%s name=%r',
+                current_category_id,
+                category_name,
+            )
+            if ZERTOTAG_CATEGORY_PATTERN.fullmatch(category_name):
                 category_id = current_category_id
                 break
 
         if category_id is None:
-            return None
+            logging.debug('Zerto tag check: required category was not found')
+            return None, rest_api_calls
+        logging.debug('Zerto tag check: found required category id=%s', category_id)
 
         tags_url = '{}/rest/com/vmware/cis/tagging/tag?~action=list-tags-for-category'.format(
             base_url
         )
         tag_ids = get_response_value(
-            session.post(tags_url, json={'category_id': category_id}),
+            request('post', tags_url, json={'category_id': category_id}),
             'Tag listing',
         )
         if not isinstance(tag_ids, list):
             raise TaggingApiError('Tag listing returned an invalid response')
+        logging.debug(
+            'Zerto tag check: found %d tags in required category: %s',
+            len(tag_ids),
+            tag_ids,
+        )
         if not tag_ids:
-            return set()
+            return set(), rest_api_calls
 
         associations = get_response_value(
-            session.post(
+            request(
+                'post',
                 '{}/rest/com/vmware/cis/tagging/tag-association?~action='
                 'list-attached-objects-on-tags'.format(base_url),
                 json={'tag_ids': tag_ids},
@@ -136,18 +173,30 @@ def get_protected_vm_ids(args):
 
     if not isinstance(associations, list):
         raise TaggingApiError('Tag association lookup returned an invalid response')
+    logging.debug('Zerto tag check: received %d tag association results', len(associations))
 
     protected_vm_ids = set()
     for association in associations:
         if not isinstance(association, dict) or not isinstance(association.get('object_ids'), list):
             raise TaggingApiError('Tag association lookup returned an invalid response')
+        logging.debug(
+            'Zerto tag check: tag id=%s has %d attached objects',
+            association.get('tag_id'),
+            len(association['object_ids']),
+        )
         for object_id in association['object_ids']:
             if not isinstance(object_id, dict):
                 raise TaggingApiError('Tag association lookup returned an invalid response')
             if object_id.get('type') == 'VirtualMachine' and isinstance(object_id.get('id'), str):
                 protected_vm_ids.add(object_id['id'])
 
-    return protected_vm_ids
+    logging.debug(
+        'Zerto tag check: found %d protected virtual machines: %s',
+        len(protected_vm_ids),
+        sorted(protected_vm_ids),
+    )
+    logging.debug('Zerto tag check: made %d vCenter REST API calls', rest_api_calls)
+    return protected_vm_ids, rest_api_calls
 
 
 def run():
@@ -185,22 +234,32 @@ def run():
         begin_entity=parentView,
         properties=['name', 'config.template'],
     )
+    logging.debug('Zerto tag check: discovered %d virtual machines', len(vms))
 
     candidates = {}
     for vm in vms:
-        if isbanned(args, vm['props']['name']):
+        name = vm['props']['name']
+        if isbanned(args, name):
+            logging.debug('Zerto tag check: excluding VM %s because it matches --exclude', name)
             continue
-        if not isallowed(args, vm['props']['name']):
+        if not isallowed(args, name):
+            logging.debug('Zerto tag check: excluding VM %s because it does not match --include', name)
             continue
         if not args.include_powered_off and vm['props'].get('runtime.powerState') != 'poweredOn':
+            logging.debug('Zerto tag check: excluding powered-off VM %s', name)
             continue
         if vm['props'].get('config.template'):
+            logging.debug('Zerto tag check: excluding template %s', name)
             continue
 
-        candidates[vm['obj'].obj._moId] = vm['props']['name']
+        vm_id = vm['obj'].obj._moId
+        candidates[vm_id] = name
+        logging.debug('Zerto tag check: candidate VM id=%s name=%s', vm_id, name)
+
+    logging.debug('Zerto tag check: evaluating %d eligible virtual machines', len(candidates))
 
     try:
-        protected_vm_ids = get_protected_vm_ids(args)
+        protected_vm_ids, rest_api_calls = get_protected_vm_ids(args)
     except TaggingApiError as error:
         check.exit(Status.UNKNOWN, 'Unable to query vCenter tagging API: {}'.format(error))
 
@@ -208,10 +267,23 @@ def run():
         check.exit(Status.CRITICAL, '{} category not found'.format(ZERTOTAG_CATEGORY))
 
     check.add_message(Status.OK, 'no VMs missing Zerto tags')
-    for vm_id in sorted(set(candidates) - protected_vm_ids, key=lambda item: candidates[item]):
+    candidate_vm_ids = set(candidates)
+    tagged_vm_ids = candidate_vm_ids & protected_vm_ids
+    missing_vm_ids = sorted(candidate_vm_ids - protected_vm_ids, key=lambda item: candidates[item])
+    logging.debug(
+        'Zerto tag check: found %d of %d eligible VMs with a Zerto tag',
+        len(tagged_vm_ids),
+        len(candidate_vm_ids),
+    )
+    logging.debug('Zerto tag check: found %d VMs without a Zerto tag', len(missing_vm_ids))
+    for vm_id in missing_vm_ids:
         check.add_message(Status.CRITICAL, '{} is missing Zerto tag'.format(candidates[vm_id]))
 
-    (code, message) = check.check_messages(separator=' - ')
+    check.add_perfdata(label='vms', value=len(candidate_vm_ids))
+    check.add_perfdata(label='tagged_vms', value=len(tagged_vm_ids))
+    check.add_perfdata(label='rest_api_calls', value=rest_api_calls)
+
+    (code, message) = check.check_messages(separator='\n', separator_all='\n')
     check.exit(
         code=code,
         message=message

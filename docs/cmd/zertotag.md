@@ -4,9 +4,10 @@ title: zertotag
 
 ## Description
 
-This command verifies that eligible virtual machines have a tag in the exact
-`Zerto - Protection Automation` vCenter category. This tag is used by the
-Zerto DRaaS protection-automation workflow.
+This command verifies that eligible virtual machines have a tag in a vCenter
+category named `Zerto - Protection Automation`. The hyphen may also be an en
+dash (`U+2013`) to support the category name used by Zerto DRaaS protection
+automation.
 
 The command reports CRITICAL for every eligible VM without a tag in that
 category. It also reports CRITICAL when the required category does not exist.
@@ -15,6 +16,9 @@ as UNKNOWN.
 
 The vCenter account needs permission to list tagging categories, tags, and tag
 associations.
+
+The command exports `vms` (eligible VMs), `tagged_vms` (eligible VMs with a
+matching tag), and `rest_api_calls` performance data.
 
 ## Options
 
