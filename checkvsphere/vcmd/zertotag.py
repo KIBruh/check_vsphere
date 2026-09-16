@@ -78,7 +78,7 @@ def get_response_value(response, operation):
     return payload['value']
 
 
-def get_protected_vm_ids(args, si):
+def get_protected_vm_ids(args):
     """Return VM managed-object IDs assigned a tag in the Zerto category."""
     base_url = 'https://{}:{}'.format(args.host, args.port)
     session = requests.Session()
@@ -90,16 +90,23 @@ def get_protected_vm_ids(args, si):
         rest_api_calls += 1
         return getattr(session, method)(url, **kwargs)
 
-    soap_session_id = si._GetStub().GetSessionId()
-    if not isinstance(soap_session_id, str) or not soap_session_id:
-        raise TaggingApiError('pyVmomi session ID is unavailable')
-    session.headers.update({'vmware-api-session-id': soap_session_id})
-    logging.debug('Zerto tag check: using pyVmomi session for REST requests')
-
     try:
-        category_url = '{}/rest/com/vmware/cis/tagging/category'.format(base_url)
-        category_response = request('get', category_url)
-        category_ids = get_response_value(category_response, 'Category listing')
+        logging.debug('Zerto tag check: authenticating to vCenter REST API at %s', base_url)
+        response = request(
+            'post',
+            '{}/rest/com/vmware/cis/session'.format(base_url),
+            auth=(args.user, args.password),
+        )
+        session_token = get_response_value(response, 'REST authentication')
+        if not isinstance(session_token, str) or not session_token:
+            raise TaggingApiError('REST authentication returned an invalid session token')
+        session.headers.update({'vmware-api-session-id': session_token})
+        logging.debug('Zerto tag check: vCenter REST authentication succeeded')
+
+        category_ids = get_response_value(
+            request('get', '{}/rest/com/vmware/cis/tagging/category'.format(base_url)),
+            'Category listing',
+        )
         if not isinstance(category_ids, list):
             raise TaggingApiError('Category listing returned an invalid response')
         logging.debug('Zerto tag check: found %d tag categories', len(category_ids))
@@ -259,7 +266,7 @@ def run():
     logging.debug('Zerto tag check: evaluating %d eligible virtual machines', len(candidates))
 
     try:
-        protected_vm_ids, rest_api_calls = get_protected_vm_ids(args, si)
+        protected_vm_ids, rest_api_calls = get_protected_vm_ids(args)
     except TaggingApiError as error:
         check.exit(Status.UNKNOWN, 'Unable to query vCenter tagging API: {}'.format(error))
 

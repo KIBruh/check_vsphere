@@ -73,14 +73,12 @@ def vm(vm_id, name, power_state='poweredOn', template=False):
     }
 
 
-def configure_run(monkeypatch, args, vms, session, soap_session_id='soap-session-id'):
+def configure_run(monkeypatch, args, vms, session):
     monkeypatch.setattr(zertotag.cli, 'Parser', lambda: DummyParser(args))
-    fake_si = types.SimpleNamespace(content=types.SimpleNamespace(rootFolder=object()))
-    fake_si._GetStub = lambda: types.SimpleNamespace(GetSessionId=lambda: soap_session_id)
     monkeypatch.setattr(
         zertotag.service_instance,
         'connect',
-        lambda _args: fake_si,
+        lambda _args: types.SimpleNamespace(content=types.SimpleNamespace(rootFolder=object())),
     )
     monkeypatch.setattr(zertotag, 'find_entity_views', lambda *args, **kwargs: vms)
     monkeypatch.setattr(zertotag.requests, 'Session', lambda: session)
@@ -88,6 +86,7 @@ def configure_run(monkeypatch, args, vms, session, soap_session_id='soap-session
 
 def successful_responses(protected_objects, category_name=zertotag.ZERTOTAG_CATEGORY):
     return [
+        FakeResponse('session-token'),
         FakeResponse(['similar-category', 'zerto-category']),
         FakeResponse({'name': 'Zerto - Other'}),
         FakeResponse({'name': category_name}),
@@ -131,7 +130,7 @@ def test_zertotag_uses_exact_category_and_bulk_associations(monkeypatch, capsys)
     assert "'ignored_vms'=1.0" in output
     assert "'template_vms'=1.0" in output
     assert "'discovered_vms'=5.0" in output
-    assert "'rest_api_calls'=5.0" in output
+    assert "'rest_api_calls'=6.0" in output
     assert 'powered-off' not in output
     assert session.verify is True
     assert all(':8443/' in call[1] for call in session.calls)
@@ -154,27 +153,6 @@ def test_zertotag_can_include_powered_off_vms(monkeypatch, capsys):
 
     assert exc.value.code == Status.CRITICAL.value
     assert 'powered-off is missing Zerto tag' in capsys.readouterr().out
-
-
-def test_zertotag_uses_pyvmomi_session_for_rest_requests(monkeypatch, capsys):
-    args = make_args()
-    session = FakeSession(successful_responses([{'type': 'VirtualMachine', 'id': 'vm-protected'}]))
-    configure_run(
-        monkeypatch,
-        args,
-        [vm('vm-protected', 'protected')],
-        session,
-        soap_session_id='soap-session-id',
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        zertotag.run()
-
-    assert exc.value.code == Status.OK.value
-    assert session.calls[0][0] == 'get'
-    assert len(session.calls) == 5
-    assert session.headers['vmware-api-session-id'] == 'soap-session-id'
-    assert "'rest_api_calls'=5.0" in capsys.readouterr().out
 
 
 def test_zertotag_accepts_en_dash_category_name(monkeypatch, capsys):
@@ -213,6 +191,7 @@ def test_zertotag_reports_tagging_api_errors_as_unknown(monkeypatch, capsys):
 def test_zertotag_reports_missing_required_category_as_critical(monkeypatch, capsys):
     args = make_args()
     session = FakeSession([
+        FakeResponse('session-token'),
         FakeResponse(['other-category']),
         FakeResponse({'name': 'Zerto - Other'}),
     ])

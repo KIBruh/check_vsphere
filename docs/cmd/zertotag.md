@@ -28,7 +28,7 @@ The command exports the following performance data:
 | `offline_vms` | Powered-off non-template VMs excluded by default. |
 | `ignored_vms` | VMs excluded by `--include` or `--exclude`. |
 | `template_vms` | Templates excluded from the check. |
-| `rest_api_calls` | vCenter tagging REST requests. |
+| `rest_api_calls` | vCenter REST requests, including authentication. |
 
 ## Options
 
