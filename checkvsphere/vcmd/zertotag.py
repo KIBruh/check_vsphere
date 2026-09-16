@@ -295,7 +295,7 @@ def run():
     check.add_perfdata(label='discovered_vms', value=len(vms))
     check.add_perfdata(label='rest_api_calls', value=rest_api_calls)
 
-    (code, message) = check.check_messages(separator='\n', separator_all='\n')
+    (code, message) = check.check_messages(separator='\n')
     check.exit(
         code=code,
         message=message
